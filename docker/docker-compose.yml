@@ -1,0 +1,252 @@
+services:
+  vpn:
+    container_name: vpn
+    image: dperson/openvpn-client
+    restart: unless-stopped
+    environment:
+      - PUID=${VPN_PUID}
+      - PGID=${VPN_PGID}
+      - TZ=${TZ}
+      - FIREWALL='' # If you use different VPN ports then default 1194 add them in here, otherwise leave it empty as is.
+      #- ROUTE='192.168.0.0/16' # Specify subnet of your home LAN in order to connect into the container behind VPN - if you don't, containers will work but you wont be able to connect to them locally.
+    volumes:
+      - /dev/net:/dev/net:z
+      - ${CONFIG_PATH}/vpn:/vpn
+    dns:
+      - 84.200.69.80 # DNS.Watch
+      - 80.67.169.12 # FDN
+    networks:
+      - indexer-net
+      - download-net
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - label:disable
+      - no-new-privileges:true
+    stdin_open: true
+    tty: true
+    # You will need to change this, read https://github.com/dperson/openvpn-client
+    # -r is your CIDR network (I specify two to allow my other docker containers in)
+    # -p is for port forwarding, so your torrent port forwards work.
+    #command: '-r 172.19.0.0/16 -f 1302 -p 23009'
+    ports:
+      - 127.0.0.1:9117:9117
+      - 22857:22857
+      - 22857:22857/udp
+      - 127.0.0.1:${QBITTORRENT_WEBUI_PORT}:${QBITTORRENT_WEBUI_PORT}
+
+  qbittorrent:
+    image: linuxserver/qbittorrent
+    container_name: qbittorrent
+    restart: unless-stopped
+    depends_on:
+      - vpn
+    environment:
+      - PUID=${QBITTORRENT_PUID}
+      - PGID=${MEDIA_PGID}
+      - TZ=${TZ}
+      - UMASK=${UMASK}
+      - WEBUI_PORT=${QBITTORRENT_WEBUI_PORT}
+    volumes:
+      - ${CONFIG_PATH}/qbittorrent/config:/config
+      - ${DOWNLOAD_PATH}:/downloads
+      - ${TORRENTS_PATH}/incomplete:/incomplete
+      - ${TORRENTS_PATH}/torrent_files:/torrent_files
+    network_mode: service:vpn
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  jackett:
+    image: linuxserver/jackett
+    container_name: jackett
+    restart: unless-stopped
+    depends_on:
+      - vpn
+    environment:
+      - PUID=${JACKETT_PUID}
+      - PGID=${JACKETT_PGID}
+      - UMASK=${UMASK}
+      - TZ=${TZ}
+      - AUTO_UPDATE=true
+    volumes:
+      - ${CONFIG_PATH}/jackett/config:/config
+    network_mode: service:vpn
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    depends_on:
+      - vpn
+      - jackett
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_HTML=${LOG_HTML:-false}
+      - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
+      - TZ=${TZ}
+    network_mode: service:vpn
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  radarr:
+    image: linuxserver/radarr
+    container_name: radarr
+    restart: unless-stopped
+    depends_on:
+      - jackett
+      - qbittorrent
+    environment:
+      - PUID=${RADARR_PUID}
+      - PGID=${MEDIA_PGID}
+      - UMASK=${UMASK}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_PATH}/radarr/config:/config
+      - ${MOVIES_PATH}:/data/Movies
+      - ${DOWNLOAD_PATH}:/downloads
+    networks: 
+      - indexer-net
+      - download-net
+      - media-net
+    ports:
+      - 127.0.0.1:7878:7878
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  sonarr:
+    image: linuxserver/sonarr
+    container_name: sonarr
+    restart: unless-stopped
+    depends_on:
+      - jackett
+      - qbittorrent
+    environment:
+      - PUID=${SONARR_PUID}
+      - PGID=${MEDIA_PGID}
+      - UMASK=${UMASK}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_PATH}/sonarr/config:/config
+      - ${SERIES_PATH}:/data/Series
+      - ${DOWNLOAD_PATH}:/downloads
+    networks: 
+      - indexer-net
+      - download-net
+      - media-net
+    ports:
+      - 127.0.0.1:8989:8989
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  ombi:
+    image: linuxserver/ombi
+    container_name: ombi
+    restart: unless-stopped
+    depends_on:
+      - radarr
+      - sonarr
+    environment:
+      - PUID=${OMBI_PUID}
+      - PGID=${OMBI_PGID}
+      - UMASK=${UMASK}
+      - TZ=${TZ}
+      - BASE_URL=/ombi
+    volumes:
+      - ${CONFIG_PATH}/ombi/config:/config
+    networks: 
+      - media-net
+    ports:
+      - 127.0.0.1:5000:3579
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  jellyfin:
+    image: linuxserver/jellyfin
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      - PUID=${JELLYFIN_PUID}
+      - PGID=${MEDIA_PGID}
+      - UMASK=${UMASK}
+      - TZ=${TZ}
+    volumes:
+      - ${CONFIG_PATH}/jellyfin/config:/config
+      - ${MOVIES_PATH}:/data/Movies
+      - ${SERIES_PATH}:/data/Series
+    networks: 
+      - media-net
+    ports:
+      - 127.0.0.1:8096:8096
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+# if not DAC_OVERRIDE -> mkdir:‘/config/custom-cont-init.d’: Permission denied
+
+
+networks: 
+  indexer-net:
+    driver: bridge
+  download-net:
+    driver: bridge
+  media-net:
+    driver: bridge
